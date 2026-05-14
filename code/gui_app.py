@@ -6,6 +6,7 @@ MNIST 手写数字识别 — PySide6 上位机
 import sys
 import os
 import numpy as np
+from PIL import Image, ImageFilter
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -64,12 +65,8 @@ class DrawPad(QWidget):
             self.pixels[gy, gx] = max(self.pixels[gy, gx], value)
 
     def _draw_brush(self, gx, gy):
-        """纤细十字笔刷：中心 255 + 四邻 160"""
+        """单像素笔刷"""
         self._paint_pixel(gx, gy, 255)
-        self._paint_pixel(gx, gy - 1, 160)
-        self._paint_pixel(gx, gy + 1, 160)
-        self._paint_pixel(gx - 1, gy, 160)
-        self._paint_pixel(gx + 1, gy, 160)
 
     def _draw_line(self, x0, y0, x1, y1):
         """Bresenham 画线法：在两点间连续填充像素"""
@@ -116,7 +113,13 @@ class DrawPad(QWidget):
         self.update()
 
     def get_normalized_image(self):
-        return (self.pixels.astype(np.float32) / 255.0).reshape(self.GRID_SIZE, self.GRID_SIZE, 1)
+        """返回归一化图像 + 高斯模糊模拟 MNIST 反锯齿风格"""
+        arr = self.pixels.astype(np.float32)
+        # 高斯模糊 sigma≈0.7：让硬边变成 MNIST 风格渐变
+        img = Image.fromarray(arr).convert('L')
+        img = img.filter(ImageFilter.GaussianBlur(radius=0.7))
+        arr = np.array(img, dtype=np.float32) / 255.0
+        return arr.reshape(self.GRID_SIZE, self.GRID_SIZE, 1)
 
 
 class ProbabilityBarChart(QWidget):
