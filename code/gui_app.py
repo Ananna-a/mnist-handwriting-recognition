@@ -6,8 +6,8 @@ MNIST 手写数字识别 — PySide6 上位机
 import sys
 import os
 import numpy as np
+import ctypes
 from PIL import Image
-from PIL.ImageQt import fromqimage
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -99,20 +99,27 @@ class DrawPad(QWidget):
         将画布内容转为模型输入格式：28×28 归一化数组
         返回: numpy array, shape (28, 28, 1), dtype float32, 值范围 [0, 1]
         """
-        # 1. QImage → PIL Image
-        ptr = self.canvas.bits()
+        w = self.canvas.width()
+        h = self.canvas.height()
+        ptr = self.canvas.constBits()
         if ptr is None:
             return np.zeros((28, 28, 1), dtype=np.float32)
 
-        img = fromqimage(self.canvas).convert('L')
-        # 2. 缩放到 28×28（使用高质量重采样）
-        img = img.resize((28, 28), Image.Resampling.LANCZOS)
-        # 3. 转为 NumPy 数组并归一化（黑白反转：画布黑底=0，笔迹白=255 → 背景0，笔迹1）
-        arr = np.array(img, dtype=np.float32)
-        arr = 1.0 - arr / 255.0  # 反转并归一化
-        # 确保是 (28, 28, 1) 形状
-        arr = arr.reshape(28, 28, 1)
-        return arr
+        # 将 QImage 原始字节转为 numpy 数组（Format_Grayscale8: 每像素1字节）
+        # bytesPerLine 可能含 4 字节对齐填充，需要逐行截取
+        bpl = self.canvas.bytesPerLine()
+        raw = ctypes.string_at(ptr, bpl * h)
+        full = np.frombuffer(raw, dtype=np.uint8).reshape(h, bpl)
+        img = full[:, :w]  # 截取实际宽度，去掉 padding
+
+        # 缩放到 28×28（使用 PIL 高质量重采样）
+        pil_img = Image.fromarray(img, mode='L')
+        pil_img = pil_img.resize((28, 28), Image.Resampling.LANCZOS)
+
+        # 黑白反转：画布黑底=0 → 背景=0，笔迹白色 → 1
+        arr = np.array(pil_img, dtype=np.float32)
+        arr = 1.0 - arr / 255.0
+        return arr.reshape(28, 28, 1)
 
 
 class ProbabilityBarChart(QWidget):
