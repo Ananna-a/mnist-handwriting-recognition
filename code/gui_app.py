@@ -273,29 +273,50 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("正在加载模型...")
 
+    def _ensure_onnx_model(self):
+        """若不存在 .onnx 但存在 .h5，自动转换为 ONNX 格式"""
+        if os.path.exists(self.model_path):
+            return True
+
+        if not os.path.exists(self.fallback_path):
+            return False
+
+        self.status_bar.showMessage("正在将 .h5 模型转换为 ONNX 格式...")
+        try:
+            import tensorflow as tf
+            import tf2onnx
+
+            model = tf.keras.models.load_model(self.fallback_path)
+            model.output_names = ['output']
+            spec = (tf.TensorSpec((None, 28, 28, 1), tf.float32, name='input'),)
+            model_proto, _ = tf2onnx.convert.from_keras(model, input_signature=spec, opset=13)
+            with open(self.model_path, 'wb') as f:
+                f.write(model_proto.SerializeToString())
+            self.status_bar.showMessage("ONNX 模型转换成功！")
+            return True
+        except Exception as e:
+            self.status_bar.showMessage(f"模型转换失败: {str(e)}")
+            self.label_result.setText("!")
+            return False
+
     def _load_model(self):
-        """加载 ONNX 模型"""
+        """加载 ONNX 模型（自动从 .h5 转换）"""
         if not MODEL_AVAILABLE:
             self.status_bar.showMessage("错误: onnxruntime 未安装，请运行 pip install onnxruntime")
             self.label_result.setText("!")
             return
 
-        # 优先加载 ONNX，不存在则尝试 .h5 + tf2onnx
-        if os.path.exists(self.model_path):
-            model_to_load = self.model_path
-        elif os.path.exists(self.fallback_path):
-            self.status_bar.showMessage("未找到 .onnx 文件，请先运行 convert_to_onnx.py 转换模型")
-            self.label_result.setText("!")
-            return
-        else:
-            self.status_bar.showMessage("错误: 未找到模型文件，请先运行训练笔记本")
-            self.label_result.setText("!")
+        if not self._ensure_onnx_model():
+            if os.path.exists(self.fallback_path):
+                self.status_bar.showMessage("ONNX 转换失败，请检查 TensorFlow 和 tf2onnx 是否安装")
+            else:
+                self.status_bar.showMessage("错误: 未找到模型文件，请先运行训练笔记本生成 mnist_cnn.h5")
             return
 
         try:
-            self.session = ort.InferenceSession(model_to_load)
+            self.session = ort.InferenceSession(self.model_path)
             self.input_name = self.session.get_inputs()[0].name
-            self.status_bar.showMessage(f"模型已加载: {os.path.basename(model_to_load)} | 等待手写输入...")
+            self.status_bar.showMessage(f"模型已加载: {os.path.basename(self.model_path)} | 等待手写输入...")
         except Exception as e:
             self.status_bar.showMessage(f"模型加载失败: {str(e)}")
             self.label_result.setText("!")
