@@ -6,7 +6,8 @@ MNIST 手写数字识别 — PySide6 上位机
 import sys
 import os
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
+from PIL.ImageQt import fromqimage
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -15,14 +16,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QPoint, QSize
 from PySide6.QtGui import QPainter, QPen, QColor, QPixmap, QFont, QImage
 
-# 尝试导入 TensorFlow
+# 使用 ONNX Runtime 进行推理（避免 PySide6 与 TensorFlow DLL 冲突）
 try:
-    import tensorflow as tf
-    from tensorflow import keras
-    TF_AVAILABLE = True
+    import onnxruntime as ort
+    MODEL_AVAILABLE = True
 except ImportError:
-    TF_AVAILABLE = False
-    print("警告: 未安装 TensorFlow，请先运行 pip install tensorflow")
+    MODEL_AVAILABLE = False
+    print("警告: 未安装 onnxruntime，请运行 pip install onnxruntime")
 
 
 class DrawPad(QWidget):
@@ -104,13 +104,12 @@ class DrawPad(QWidget):
         if ptr is None:
             return np.zeros((28, 28, 1), dtype=np.float32)
 
-        img = Image.fromqimage(self.canvas)
+        img = fromqimage(self.canvas).convert('L')
         # 2. 缩放到 28×28（使用高质量重采样）
         img = img.resize((28, 28), Image.Resampling.LANCZOS)
-        # 3. 转为 NumPy 数组并归一化
+        # 3. 转为 NumPy 数组并归一化（黑白反转：画布黑底=0，笔迹白=255 → 背景0，笔迹1）
         arr = np.array(img, dtype=np.float32)
-        # QImage 灰度: 0=黑, 255=白 → 需要反转为 0=背景, 1=笔迹
-        arr = arr / 255.0
+        arr = 1.0 - arr / 255.0  # 反转并归一化
         # 确保是 (28, 28, 1) 形状
         arr = arr.reshape(28, 28, 1)
         return arr
@@ -180,8 +179,10 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(850, 550)
 
         # 状态变量
-        self.model = None
-        self.model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mnist_cnn.h5")
+        self.session = None  # ONNX Runtime 推理会话
+        self.input_name = None
+        self.model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mnist_cnn.onnx")
+        self.fallback_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mnist_cnn.h5")
 
         self._build_ui()
         self._load_model()
@@ -268,27 +269,35 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("正在加载模型...")
 
     def _load_model(self):
-        """加载训练好的模型"""
-        if not TF_AVAILABLE:
-            self.status_bar.showMessage("错误: TensorFlow 未安装，请运行 pip install tensorflow")
+        """加载 ONNX 模型"""
+        if not MODEL_AVAILABLE:
+            self.status_bar.showMessage("错误: onnxruntime 未安装，请运行 pip install onnxruntime")
             self.label_result.setText("!")
             return
 
-        if not os.path.exists(self.model_path):
-            self.status_bar.showMessage(f"错误: 未找到模型文件 {self.model_path}，请先运行训练笔记本")
+        # 优先加载 ONNX，不存在则尝试 .h5 + tf2onnx
+        if os.path.exists(self.model_path):
+            model_to_load = self.model_path
+        elif os.path.exists(self.fallback_path):
+            self.status_bar.showMessage("未找到 .onnx 文件，请先运行 convert_to_onnx.py 转换模型")
+            self.label_result.setText("!")
+            return
+        else:
+            self.status_bar.showMessage("错误: 未找到模型文件，请先运行训练笔记本")
             self.label_result.setText("!")
             return
 
         try:
-            self.model = keras.models.load_model(self.model_path)
-            self.status_bar.showMessage(f"模型已加载: {os.path.basename(self.model_path)} | 等待手写输入...")
+            self.session = ort.InferenceSession(model_to_load)
+            self.input_name = self.session.get_inputs()[0].name
+            self.status_bar.showMessage(f"模型已加载: {os.path.basename(model_to_load)} | 等待手写输入...")
         except Exception as e:
             self.status_bar.showMessage(f"模型加载失败: {str(e)}")
             self.label_result.setText("!")
 
     def on_predict(self):
         """点击识别按钮"""
-        if self.model is None:
+        if self.session is None:
             self.status_bar.showMessage("模型未加载，无法识别")
             return
 
@@ -296,10 +305,10 @@ class MainWindow(QMainWindow):
         img_array = self.draw_pad.get_normalized_image()
 
         # 2. 添加 batch 维度 (1, 28, 28, 1)
-        input_batch = np.expand_dims(img_array, axis=0)
+        input_batch = np.expand_dims(img_array, axis=0).astype(np.float32)
 
-        # 3. 模型推理
-        predictions = self.model.predict(input_batch, verbose=0)
+        # 3. ONNX Runtime 推理
+        predictions = self.session.run(None, {self.input_name: input_batch})[0]
         pred_digit = np.argmax(predictions)
         pred_conf = np.max(predictions)
 
