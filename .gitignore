@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+env/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model files (large)
+*.h5
+*.keras
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
