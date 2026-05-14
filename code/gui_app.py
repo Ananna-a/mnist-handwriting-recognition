@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QStatusBar
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QImage
 
 # 使用 ONNX Runtime 进行推理（避免 PySide6 与 TensorFlow DLL 冲突）
@@ -25,101 +25,123 @@ except ImportError:
 
 
 class DrawPad(QWidget):
-    """28×28 像素手写画板 — 每个像素放大 14 倍显示，便于鼠标绘制"""
+    """400×400 手写画板 — 自由绘制，后台自动裁剪居中适配 28×28"""
 
-    PIXEL_SCALE = 14
-    GRID_SIZE = 28
-    DISPLAY_SIZE = GRID_SIZE * PIXEL_SCALE  # 392
+    CANVAS_SIZE = 400
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(self.DISPLAY_SIZE, self.DISPLAY_SIZE)
+        self.setFixedSize(self.CANVAS_SIZE, self.CANVAS_SIZE)
         self.setMouseTracking(True)
 
-        self.pixels = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.uint8)
+        # QImage 画布，直接在 GPU 友好的格式上绘制
+        self.canvas = QImage(self.CANVAS_SIZE, self.CANVAS_SIZE, QImage.Format_Grayscale8)
+        self.canvas.fill(Qt.black)
+        self.last_point = None
         self.drawing = False
-        self.last_grid = None
+        self.pen_width = 20
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        h, w = self.pixels.shape
-        qimg = QImage(self.pixels.tobytes(), w, h, w, QImage.Format_Grayscale8)
-        painter.drawImage(0, 0, qimg.scaled(self.DISPLAY_SIZE, self.DISPLAY_SIZE))
-
-        # 绘制浅灰网格线
-        painter.setPen(QPen(QColor(50, 50, 50), 1))
-        for i in range(1, self.GRID_SIZE):
-            pos = i * self.PIXEL_SCALE
-            painter.drawLine(pos, 0, pos, self.DISPLAY_SIZE)
-            painter.drawLine(0, pos, self.DISPLAY_SIZE, pos)
+        painter.drawImage(0, 0, self.canvas)
+        painter.setPen(QPen(QColor(60, 60, 60), 1))
+        step = self.CANVAS_SIZE // 8
+        for i in range(1, 8):
+            painter.drawLine(i * step, 0, i * step, self.CANVAS_SIZE)
+            painter.drawLine(0, i * step, self.CANVAS_SIZE, i * step)
+        painter.setPen(QPen(QColor(100, 100, 100), 2))
+        painter.drawRect(0, 0, self.CANVAS_SIZE - 1, self.CANVAS_SIZE - 1)
         painter.end()
-
-    def _screen_to_grid(self, x, y):
-        gx = int(x) // self.PIXEL_SCALE
-        gy = int(y) // self.PIXEL_SCALE
-        return max(0, min(self.GRID_SIZE - 1, gx)), max(0, min(self.GRID_SIZE - 1, gy))
-
-    def _paint_pixel(self, gx, gy, value=255):
-        """绘制单个像素，value 越大越亮"""
-        if 0 <= gx < self.GRID_SIZE and 0 <= gy < self.GRID_SIZE:
-            self.pixels[gy, gx] = max(self.pixels[gy, gx], value)
-
-    def _draw_brush(self, gx, gy):
-        """单像素笔刷"""
-        self._paint_pixel(gx, gy, 255)
-
-    def _draw_line(self, x0, y0, x1, y1):
-        """Bresenham 画线法：在两点间连续填充像素"""
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-        while True:
-            self._draw_brush(x0, y0)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                x0 += sx
-            if e2 < dx:
-                err += dx
-                y0 += sy
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = True
-            gx, gy = self._screen_to_grid(event.position().x(), event.position().y())
-            self.last_grid = (gx, gy)
-            self._draw_brush(gx, gy)
-            self.update()
+            self.last_point = event.position().toPoint()
+            self._draw_point(self.last_point)
 
     def mouseMoveEvent(self, event):
         if self.drawing and event.buttons() & Qt.LeftButton:
-            gx, gy = self._screen_to_grid(event.position().x(), event.position().y())
-            if self.last_grid is not None:
-                self._draw_line(self.last_grid[0], self.last_grid[1], gx, gy)
-            self.last_grid = (gx, gy)
-            self.update()
+            p = event.position().toPoint()
+            self._draw_line(self.last_point, p)
+            self.last_point = p
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = False
-            self.last_grid = None
+            self.last_point = None
+
+    def _draw_point(self, point):
+        painter = QPainter(self.canvas)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255))
+        r = self.pen_width // 2
+        painter.drawEllipse(point, r, r)
+        painter.end()
+        self.update()
+
+    def _draw_line(self, start, end):
+        painter = QPainter(self.canvas)
+        painter.setPen(QPen(QColor(255, 255, 255), self.pen_width,
+                            Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawLine(start, end)
+        painter.end()
+        self.update()
 
     def clear(self):
-        self.pixels.fill(0)
+        self.canvas.fill(Qt.black)
         self.update()
 
     def get_normalized_image(self):
-        """返回归一化图像 + 高斯模糊模拟 MNIST 反锯齿风格"""
-        arr = self.pixels.astype(np.float32)
-        # 高斯模糊 sigma≈0.7：让硬边变成 MNIST 风格渐变
-        img = Image.fromarray(arr).convert('L')
-        img = img.filter(ImageFilter.GaussianBlur(radius=0.7))
-        arr = np.array(img, dtype=np.float32) / 255.0
-        return arr.reshape(self.GRID_SIZE, self.GRID_SIZE, 1)
+        """
+        预处理管线：400×400 → 边界裁剪 → 保持比例缩至20×20 → 居中嵌入28×28 → 高斯模糊
+        """
+        w = self.CANVAS_SIZE
+        h = self.CANVAS_SIZE
+        bpl = self.canvas.bytesPerLine()
+
+        bits = self.canvas.constBits()
+        if bits is None:
+            return np.zeros((28, 28, 1), dtype=np.float32)
+
+        full = np.frombuffer(bits, dtype=np.uint8).reshape(h, bpl)
+        img = full[:, :w]
+
+        # 找笔画边界（阈值 30 过滤噪声）
+        rows = np.any(img > 30, axis=1)
+        cols = np.any(img > 30, axis=0)
+        if not rows.any() or not cols.any():
+            return np.zeros((28, 28, 1), dtype=np.float32)
+
+        y_min, y_max = np.where(rows)[0][[0, -1]]
+        x_min, x_max = np.where(cols)[0][[0, -1]]
+
+        # 15% padding
+        box_h = y_max - y_min + 1
+        box_w = x_max - x_min + 1
+        pad_y = int(box_h * 0.15)
+        pad_x = int(box_w * 0.15)
+        y1 = max(0, y_min - pad_y)
+        y2 = min(h, y_max + pad_y + 1)
+        x1 = max(0, x_min - pad_x)
+        x2 = min(w, x_max + pad_x + 1)
+
+        # 裁剪区域
+        crop = Image.fromarray(img[y1:y2, x1:x2], mode='L')
+
+        # 保持宽高比，缩放到适应 20×20
+        crop.thumbnail((20, 20), Image.Resampling.LANCZOS)
+
+        # 居中嵌入 28×28 黑色画布
+        canvas_28 = Image.new('L', (28, 28), 0)
+        off_x = (28 - crop.width) // 2
+        off_y = (28 - crop.height) // 2
+        canvas_28.paste(crop, (off_x, off_y))
+
+        # 高斯模糊模拟 MNIST 反锯齿
+        canvas_28 = canvas_28.filter(ImageFilter.GaussianBlur(radius=0.65))
+
+        arr = np.array(canvas_28, dtype=np.float32) / 255.0
+        return arr.reshape(28, 28, 1)
 
 
 class ProbabilityBarChart(QWidget):
