@@ -149,7 +149,7 @@ class ProbabilityBarChart(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(280)
+        self.setMinimumSize(160, 230)
         self.probabilities = np.zeros(10)
 
     def set_probabilities(self, probs):
@@ -162,8 +162,8 @@ class ProbabilityBarChart(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         w = self.width() - 50
-        bar_h = 24
-        gap = 6
+        bar_h = 18
+        gap = 4
         total_h = (bar_h + gap) * 10 - gap
         start_y = (self.height() - total_h) // 2
 
@@ -205,7 +205,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MNIST 手写数字识别")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(950, 680)
 
         # 状态变量
         self.session = None  # ONNX Runtime 推理会话
@@ -265,7 +265,7 @@ class MainWindow(QMainWindow):
 
         self.label_result = QLabel("?")
         self.label_result.setAlignment(Qt.AlignCenter)
-        self.label_result.setStyleSheet("font-size: 120px; font-weight: bold; color: #4CAF50;")
+        self.label_result.setStyleSheet("font-size: 90px; font-weight: bold; color: #4CAF50;")
         right_layout.addWidget(self.label_result)
 
         self.label_confidence = QLabel("置信度: --")
@@ -286,7 +286,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(preview_title)
 
         self.preview_label = QLabel()
-        self.preview_label.setFixedSize(140, 140)
+        self.preview_label.setFixedSize(120, 120)
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setStyleSheet("background-color: #111; border: 1px solid #444;")
         right_layout.addWidget(self.preview_label, alignment=Qt.AlignCenter)
@@ -297,11 +297,9 @@ class MainWindow(QMainWindow):
         prob_title.setAlignment(Qt.AlignCenter)
         right_layout.addWidget(prob_title)
 
-        # 概率柱状图
+        # 概率柱状图（自动填充剩余空间）
         self.bar_chart = ProbabilityBarChart()
-        right_layout.addWidget(self.bar_chart)
-
-        right_layout.addStretch()
+        right_layout.addWidget(self.bar_chart, stretch=1)
         layout.addWidget(right_widget)
 
         # 状态栏
@@ -369,7 +367,7 @@ class MainWindow(QMainWindow):
         # 2. 显示 28×28 预处理预览
         preview = (preview_img.reshape(28, 28) * 255).astype(np.uint8)
         qimg = QImage(preview.tobytes(), 28, 28, 28, QImage.Format_Grayscale8)
-        pixmap = QPixmap.fromImage(qimg).scaled(140, 140, Qt.KeepAspectRatio)
+        pixmap = QPixmap.fromImage(qimg).scaled(120, 120, Qt.KeepAspectRatio)
         self.preview_label.setPixmap(pixmap)
 
         # 3. 添加 batch 维度 (1, 28, 28, 1)
