@@ -37,7 +37,7 @@ class DrawPad(QWidget):
         self.last_point = None
         self.drawing = False
         # 画笔设置
-        self.pen_width = 18  # 笔触宽度
+        self.pen_width = 24  # 笔触宽度（400×400画板上，缩放后约1.7像素）
         self.pen_color = QColor(255, 255, 255)  # 白色笔迹
 
     def paintEvent(self, event):
@@ -116,7 +116,7 @@ class DrawPad(QWidget):
 
         # 黑白反转：画布黑底=0 → 背景=0，笔迹白色 → 1
         arr = np.array(pil_img, dtype=np.float32)
-        arr = 1.0 - arr / 255.0
+        arr = arr / 255.0  # 直接归一化（画布黑=0=背景，笔迹白=1=数字）
         return arr.reshape(28, 28, 1)
 
 
