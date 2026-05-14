@@ -6,7 +6,6 @@ MNIST 手写数字识别 — PySide6 上位机
 import sys
 import os
 import numpy as np
-import ctypes
 from PIL import Image
 
 from PySide6.QtWidgets import (
@@ -101,16 +100,15 @@ class DrawPad(QWidget):
         """
         w = self.canvas.width()
         h = self.canvas.height()
-        ptr = self.canvas.constBits()
-        if ptr is None:
+        bpl = self.canvas.bytesPerLine()
+
+        # constBits() 返回 memoryview，用 np.frombuffer 直接读取
+        bits = self.canvas.constBits()
+        if bits is None:
             return np.zeros((28, 28, 1), dtype=np.float32)
 
-        # 将 QImage 原始字节转为 numpy 数组（Format_Grayscale8: 每像素1字节）
-        # bytesPerLine 可能含 4 字节对齐填充，需要逐行截取
-        bpl = self.canvas.bytesPerLine()
-        raw = ctypes.string_at(ptr, bpl * h)
-        full = np.frombuffer(raw, dtype=np.uint8).reshape(h, bpl)
-        img = full[:, :w]  # 截取实际宽度，去掉 padding
+        full = np.frombuffer(bits, dtype=np.uint8).reshape(h, bpl)
+        img = full[:, :w]  # 截取实际宽度，去掉 4 字节对齐 padding
 
         # 缩放到 28×28（使用 PIL 高质量重采样）
         pil_img = Image.fromarray(img, mode='L')
