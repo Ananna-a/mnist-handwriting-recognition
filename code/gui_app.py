@@ -137,11 +137,9 @@ class DrawPad(QWidget):
 
         canvas_28 = canvas_28.filter(ImageFilter.GaussianBlur(radius=0.55))
 
-        arr = np.array(canvas_28, dtype=np.float32)
-        # 训练代码误用了 /255.0（数据已在[0,1]），模型实际接收 ~[0,0.004] 极小值
-        preview = (arr / 255.0).reshape(28, 28, 1)       # [0,1] 人眼视觉
-        model_input = (arr / 65025.0).reshape(28, 28, 1) # /255/255 匹配训练
-        return model_input, preview
+        arr = np.array(canvas_28, dtype=np.float32) / 255.0
+        # 模型训练时数据已在 [0,1]，无需额外缩放
+        return arr.reshape(28, 28, 1)
 
 
 class ProbabilityBarChart(QWidget):
@@ -362,10 +360,10 @@ class MainWindow(QMainWindow):
             return
 
         # 1. 从画板获取归一化图像 (model_input, preview)
-        img_array, preview_img = self.draw_pad.get_normalized_image()
+        img_array = self.draw_pad.get_normalized_image()
 
         # 2. 显示 28×28 预处理预览
-        preview = (preview_img.reshape(28, 28) * 255).astype(np.uint8)
+        preview = (img_array.reshape(28, 28) * 255).astype(np.uint8)
         qimg = QImage(preview.tobytes(), 28, 28, 28, QImage.Format_Grayscale8)
         pixmap = QPixmap.fromImage(qimg).scaled(120, 120, Qt.KeepAspectRatio)
         self.preview_label.setPixmap(pixmap)
