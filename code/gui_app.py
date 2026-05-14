@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QFrame, QStatusBar
 )
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QPainter, QPen, QColor, QFont, QImage
+from PySide6.QtGui import QPainter, QPen, QColor, QFont, QImage, QPixmap
 
 # 使用 ONNX Runtime 进行推理（避免 PySide6 与 TensorFlow DLL 冲突）
 try:
@@ -93,10 +93,9 @@ class DrawPad(QWidget):
 
     def get_normalized_image(self):
         """
-        预处理管线：400×400 → 边界裁剪 → 保持比例缩至20×20 → 居中嵌入28×28 → 高斯模糊
+        预处理管线：400×400 → 中心质心对齐 → 保持比例缩至20×20 → 居中嵌入28×28 → 高斯模糊
         """
-        w = self.CANVAS_SIZE
-        h = self.CANVAS_SIZE
+        w = h = self.CANVAS_SIZE
         bpl = self.canvas.bytesPerLine()
 
         bits = self.canvas.constBits()
@@ -104,41 +103,40 @@ class DrawPad(QWidget):
             return np.zeros((28, 28, 1), dtype=np.float32)
 
         full = np.frombuffer(bits, dtype=np.uint8).reshape(h, bpl)
-        img = full[:, :w]
+        img = full[:, :w].astype(np.float32)
 
-        # 找笔画边界（阈值 30 过滤噪声）
-        rows = np.any(img > 30, axis=1)
-        cols = np.any(img > 30, axis=0)
-        if not rows.any() or not cols.any():
+        # 中心质心对齐（比边界框更鲁棒）
+        mass = img.sum()
+        if mass < 1:
             return np.zeros((28, 28, 1), dtype=np.float32)
 
+        cy = int(np.sum(np.arange(h)[:, None] * img) / mass)
+        cx = int(np.sum(np.arange(w) * img) / mass)
+
+        # 按笔画范围确定裁剪尺寸
+        rows = np.any(img > 20, axis=1)
+        cols = np.any(img > 20, axis=0)
         y_min, y_max = np.where(rows)[0][[0, -1]]
         x_min, x_max = np.where(cols)[0][[0, -1]]
 
-        # 15% padding
-        box_h = y_max - y_min + 1
-        box_w = x_max - x_min + 1
-        pad_y = int(box_h * 0.15)
-        pad_x = int(box_w * 0.15)
-        y1 = max(0, y_min - pad_y)
-        y2 = min(h, y_max + pad_y + 1)
-        x1 = max(0, x_min - pad_x)
-        x2 = min(w, x_max + pad_x + 1)
+        half = int(max(y_max - y_min, x_max - x_min) * 0.6)
+        y1 = max(0, min(cy - half, y_min - 2))
+        y2 = min(h, max(cy + half, y_max + 2))
+        x1 = max(0, min(cx - half, x_min - 2))
+        x2 = min(w, max(cx + half, x_max + 2))
 
-        # 裁剪区域
-        crop = Image.fromarray(img[y1:y2, x1:x2], mode='L')
-
-        # 保持宽高比，缩放到适应 20×20
+        # 裁剪 + 保持比例缩放
+        crop = Image.fromarray(full[y1:y2, x1:x2].astype(np.uint8), mode='L')
         crop.thumbnail((20, 20), Image.Resampling.LANCZOS)
 
-        # 居中嵌入 28×28 黑色画布
+        # 居中嵌入 28×28
         canvas_28 = Image.new('L', (28, 28), 0)
         off_x = (28 - crop.width) // 2
         off_y = (28 - crop.height) // 2
         canvas_28.paste(crop, (off_x, off_y))
 
-        # 高斯模糊模拟 MNIST 反锯齿
-        canvas_28 = canvas_28.filter(ImageFilter.GaussianBlur(radius=0.65))
+        # 高斯模糊模拟 MNIST
+        canvas_28 = canvas_28.filter(ImageFilter.GaussianBlur(radius=0.55))
 
         arr = np.array(canvas_28, dtype=np.float32) / 255.0
         return arr.reshape(28, 28, 1)
@@ -205,7 +203,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MNIST 手写数字识别")
-        self.setMinimumSize(850, 550)
+        self.setMinimumSize(900, 600)
 
         # 状态变量
         self.session = None  # ONNX Runtime 推理会话
@@ -278,6 +276,18 @@ class MainWindow(QMainWindow):
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet("color: #444;")
         right_layout.addWidget(sep)
+
+        # 预处理预览
+        preview_title = QLabel("模型实际输入 (28×28)")
+        preview_title.setStyleSheet("font-size: 13px; color: #888;")
+        preview_title.setAlignment(Qt.AlignCenter)
+        right_layout.addWidget(preview_title)
+
+        self.preview_label = QLabel()
+        self.preview_label.setFixedSize(140, 140)
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setStyleSheet("background-color: #111; border: 1px solid #444;")
+        right_layout.addWidget(self.preview_label, alignment=Qt.AlignCenter)
 
         # 概率分布标题
         prob_title = QLabel("各类别概率分布")
@@ -354,15 +364,21 @@ class MainWindow(QMainWindow):
         # 1. 从画板获取归一化图像
         img_array = self.draw_pad.get_normalized_image()
 
-        # 2. 添加 batch 维度 (1, 28, 28, 1)
+        # 2. 显示 28×28 预处理预览
+        preview = (img_array.reshape(28, 28) * 255).astype(np.uint8)
+        qimg = QImage(preview.tobytes(), 28, 28, 28, QImage.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(qimg).scaled(140, 140, Qt.KeepAspectRatio)
+        self.preview_label.setPixmap(pixmap)
+
+        # 3. 添加 batch 维度 (1, 28, 28, 1)
         input_batch = np.expand_dims(img_array, axis=0).astype(np.float32)
 
-        # 3. ONNX Runtime 推理
+        # 4. ONNX Runtime 推理
         predictions = self.session.run(None, {self.input_name: input_batch})[0]
         pred_digit = np.argmax(predictions)
         pred_conf = np.max(predictions)
 
-        # 4. 更新显示
+        # 5. 更新显示
         self.label_result.setText(str(pred_digit))
         self.label_confidence.setText(f"置信度: {pred_conf:.2%}")
         self.bar_chart.set_probabilities(predictions[0])
