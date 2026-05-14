@@ -93,27 +93,29 @@ class DrawPad(QWidget):
 
     def get_normalized_image(self):
         """
-        预处理管线：400×400 → 中心质心对齐 → 保持比例缩至20×20 → 居中嵌入28×28 → 高斯模糊
+        预处理管线：返回 (model_input, preview_image)
+        model_input: 匹配训练时的值域 (训练代码误用了/255，实际值极小)
+        preview_image: [0,1] 范围，用于 GUI 预览显示
         """
         w = h = self.CANVAS_SIZE
         bpl = self.canvas.bytesPerLine()
 
         bits = self.canvas.constBits()
         if bits is None:
-            return np.zeros((28, 28, 1), dtype=np.float32)
+            empty = np.zeros((28, 28, 1), dtype=np.float32)
+            return empty, empty
 
         full = np.frombuffer(bits, dtype=np.uint8).reshape(h, bpl)
         img = full[:, :w].astype(np.float32)
 
-        # 中心质心对齐（比边界框更鲁棒）
         mass = img.sum()
         if mass < 1:
-            return np.zeros((28, 28, 1), dtype=np.float32)
+            empty = np.zeros((28, 28, 1), dtype=np.float32)
+            return empty, empty
 
         cy = int(np.sum(np.arange(h)[:, None] * img) / mass)
         cx = int(np.sum(np.arange(w) * img) / mass)
 
-        # 按笔画范围确定裁剪尺寸
         rows = np.any(img > 20, axis=1)
         cols = np.any(img > 20, axis=0)
         y_min, y_max = np.where(rows)[0][[0, -1]]
@@ -125,21 +127,21 @@ class DrawPad(QWidget):
         x1 = max(0, min(cx - half, x_min - 2))
         x2 = min(w, max(cx + half, x_max + 2))
 
-        # 裁剪 + 保持比例缩放
         crop = Image.fromarray(full[y1:y2, x1:x2].astype(np.uint8), mode='L')
         crop.thumbnail((20, 20), Image.Resampling.LANCZOS)
 
-        # 居中嵌入 28×28
         canvas_28 = Image.new('L', (28, 28), 0)
         off_x = (28 - crop.width) // 2
         off_y = (28 - crop.height) // 2
         canvas_28.paste(crop, (off_x, off_y))
 
-        # 高斯模糊模拟 MNIST
         canvas_28 = canvas_28.filter(ImageFilter.GaussianBlur(radius=0.55))
 
-        arr = np.array(canvas_28, dtype=np.float32) / 255.0
-        return arr.reshape(28, 28, 1)
+        arr = np.array(canvas_28, dtype=np.float32)
+        # 训练代码误用了 /255.0（数据已在[0,1]），模型实际接收 ~[0,0.004] 极小值
+        preview = (arr / 255.0).reshape(28, 28, 1)       # [0,1] 人眼视觉
+        model_input = (arr / 65025.0).reshape(28, 28, 1) # /255/255 匹配训练
+        return model_input, preview
 
 
 class ProbabilityBarChart(QWidget):
@@ -361,11 +363,11 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("模型未加载，无法识别")
             return
 
-        # 1. 从画板获取归一化图像
-        img_array = self.draw_pad.get_normalized_image()
+        # 1. 从画板获取归一化图像 (model_input, preview)
+        img_array, preview_img = self.draw_pad.get_normalized_image()
 
         # 2. 显示 28×28 预处理预览
-        preview = (img_array.reshape(28, 28) * 255).astype(np.uint8)
+        preview = (preview_img.reshape(28, 28) * 255).astype(np.uint8)
         qimg = QImage(preview.tobytes(), 28, 28, 28, QImage.Format_Grayscale8)
         pixmap = QPixmap.fromImage(qimg).scaled(140, 140, Qt.KeepAspectRatio)
         self.preview_label.setPixmap(pixmap)

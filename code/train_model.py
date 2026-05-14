@@ -30,9 +30,9 @@ X_test_raw, y_test_raw = test_data
 
 # ---- 2. 预处理 ----
 print("[2/5] 数据预处理...")
-X_train_raw = X_train_raw.reshape(-1, 28, 28, 1).astype('float32') / 255.0
-X_val_raw   = X_val_raw.reshape(-1, 28, 28, 1).astype('float32') / 255.0
-X_test_raw  = X_test_raw.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+X_train_raw = X_train_raw.reshape(-1, 28, 28, 1).astype('float32')
+X_val_raw   = X_val_raw.reshape(-1, 28, 28, 1).astype('float32')
+X_test_raw  = X_test_raw.reshape(-1, 28, 28, 1).astype('float32')
 
 y_train_raw = np.array(y_train_raw)
 y_val_raw   = np.array(y_val_raw)
