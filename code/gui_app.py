@@ -95,14 +95,13 @@ class DrawPad(QWidget):
 
     def get_normalized_image(self):
         """
-        将画布内容转为模型输入格式：28×28 归一化数组
-        返回: numpy array, shape (28, 28, 1), dtype float32, 值范围 [0, 1]
+        将画布内容转为模型输入格式：28×28 归一化数组（MNIST 标准预处理）
+        步骤：找边界框 → 裁剪 → 缩放至20×20 → 居中嵌入28×28
         """
         w = self.canvas.width()
         h = self.canvas.height()
         bpl = self.canvas.bytesPerLine()
 
-        # constBits() 返回 memoryview，用 np.frombuffer 直接读取
         bits = self.canvas.constBits()
         if bits is None:
             return np.zeros((28, 28, 1), dtype=np.float32)
@@ -110,14 +109,34 @@ class DrawPad(QWidget):
         full = np.frombuffer(bits, dtype=np.uint8).reshape(h, bpl)
         img = full[:, :w]  # 截取实际宽度，去掉 4 字节对齐 padding
 
-        # 缩放到 28×28（使用 PIL 高质量重采样）
-        pil_img = Image.fromarray(img, mode='L')
-        pil_img = pil_img.resize((28, 28), Image.Resampling.LANCZOS)
+        # 找笔画边界框（非零像素区域）
+        rows = np.any(img > 30, axis=1)  # 忽略极暗噪声
+        cols = np.any(img > 30, axis=0)
+        if not rows.any() or not cols.any():
+            return np.zeros((28, 28, 1), dtype=np.float32)
 
-        # 黑白反转：画布黑底=0 → 背景=0，笔迹白色 → 1
-        arr = np.array(pil_img, dtype=np.float32)
-        arr = arr / 255.0  # 直接归一化（画布黑=0=背景，笔迹白=1=数字）
-        return arr.reshape(28, 28, 1)
+        y_min, y_max = np.where(rows)[0][[0, -1]]
+        x_min, x_max = np.where(cols)[0][[0, -1]]
+
+        # 添加 20% 边距，保持正方形
+        cy = (y_min + y_max) / 2
+        cx = (x_min + x_max) / 2
+        half = max(y_max - y_min, x_max - x_min) * 0.6
+        y1 = max(0, int(cy - half))
+        y2 = min(h, int(cy + half))
+        x1 = max(0, int(cx - half))
+        x2 = min(w, int(cx + half))
+
+        # 裁剪 → 缩放至 20×20 → 嵌入 28×28 中心
+        crop = img[y1:y2, x1:x2]
+        pil_crop = Image.fromarray(crop, mode='L')
+        pil_crop = pil_crop.resize((20, 20), Image.Resampling.LANCZOS)
+
+        canvas_28 = np.zeros((28, 28), dtype=np.float32)
+        canvas_28[4:24, 4:24] = np.array(pil_crop, dtype=np.float32)
+
+        # 归一化（画布黑底=0，白笔迹=255 → 值域[0,1]）
+        return (canvas_28 / 255.0).reshape(28, 28, 1)
 
 
 class ProbabilityBarChart(QWidget):
