@@ -24,81 +24,99 @@ except ImportError:
 
 
 class DrawPad(QWidget):
-    """28×28 像素手写画板 — 每个像素放大显示为大方格，便于鼠标绘制"""
+    """28×28 像素手写画板 — 每个像素放大 14 倍显示，便于鼠标绘制"""
 
-    PIXEL_SCALE = 14  # 每像素放大的倍数 → 显示尺寸 28×14 = 392
+    PIXEL_SCALE = 14
+    GRID_SIZE = 28
+    DISPLAY_SIZE = GRID_SIZE * PIXEL_SCALE  # 392
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.grid_size = 28
-        self.display_size = self.grid_size * self.PIXEL_SCALE  # 392
-        self.setFixedSize(self.display_size, self.display_size)
+        self.setFixedSize(self.DISPLAY_SIZE, self.DISPLAY_SIZE)
         self.setMouseTracking(True)
 
-        # 28×28 像素底层数组（0=黑背景, 255=白笔迹）
-        self.pixels = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
+        self.pixels = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.uint8)
         self.drawing = False
+        self.last_grid = None
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        # 28×28 numpy → QImage → 放大显示
         h, w = self.pixels.shape
         qimg = QImage(self.pixels.tobytes(), w, h, w, QImage.Format_Grayscale8)
-        painter.drawImage(0, 0, qimg.scaled(self.display_size, self.display_size))
+        painter.drawImage(0, 0, qimg.scaled(self.DISPLAY_SIZE, self.DISPLAY_SIZE))
 
         # 绘制浅灰网格线
         painter.setPen(QPen(QColor(50, 50, 50), 1))
-        for i in range(1, self.grid_size):
+        for i in range(1, self.GRID_SIZE):
             pos = i * self.PIXEL_SCALE
-            painter.drawLine(pos, 0, pos, self.display_size)
-            painter.drawLine(0, pos, self.display_size, pos)
+            painter.drawLine(pos, 0, pos, self.DISPLAY_SIZE)
+            painter.drawLine(0, pos, self.DISPLAY_SIZE, pos)
         painter.end()
 
     def _screen_to_grid(self, x, y):
-        """屏幕坐标 → 网格坐标"""
         gx = int(x) // self.PIXEL_SCALE
         gy = int(y) // self.PIXEL_SCALE
-        return max(0, min(self.grid_size - 1, gx)), max(0, min(self.grid_size - 1, gy))
+        return max(0, min(self.GRID_SIZE - 1, gx)), max(0, min(self.GRID_SIZE - 1, gy))
+
+    def _paint_pixel(self, gx, gy, value=255):
+        """绘制单个像素，value 越大越亮"""
+        if 0 <= gx < self.GRID_SIZE and 0 <= gy < self.GRID_SIZE:
+            self.pixels[gy, gx] = max(self.pixels[gy, gx], value)
 
     def _draw_brush(self, gx, gy):
-        """在网格位置绘制 3×3 笔刷（模拟粗笔触）"""
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
-                ny, nx = gy + dy, gx + dx
-                if 0 <= ny < self.grid_size and 0 <= nx < self.grid_size:
-                    # 越靠近中心越亮
-                    dist = abs(dx) + abs(dy)
-                    val = 255 if dist <= 1 else 180
-                    self.pixels[ny, nx] = max(self.pixels[ny, nx], val)
+        """纤细十字笔刷：中心 255 + 四邻 160"""
+        self._paint_pixel(gx, gy, 255)
+        self._paint_pixel(gx, gy - 1, 160)
+        self._paint_pixel(gx, gy + 1, 160)
+        self._paint_pixel(gx - 1, gy, 160)
+        self._paint_pixel(gx + 1, gy, 160)
+
+    def _draw_line(self, x0, y0, x1, y1):
+        """Bresenham 画线法：在两点间连续填充像素"""
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        while True:
+            self._draw_brush(x0, y0)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = True
             gx, gy = self._screen_to_grid(event.position().x(), event.position().y())
+            self.last_grid = (gx, gy)
             self._draw_brush(gx, gy)
             self.update()
 
     def mouseMoveEvent(self, event):
         if self.drawing and event.buttons() & Qt.LeftButton:
             gx, gy = self._screen_to_grid(event.position().x(), event.position().y())
-            self._draw_brush(gx, gy)
+            if self.last_grid is not None:
+                self._draw_line(self.last_grid[0], self.last_grid[1], gx, gy)
+            self.last_grid = (gx, gy)
             self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = False
+            self.last_grid = None
 
     def clear(self):
-        """清空画板"""
         self.pixels.fill(0)
         self.update()
 
     def get_normalized_image(self):
-        """
-        直接返回 28×28 归一化数组（无需任何预处理！）
-        返回: numpy array, shape (28, 28, 1), dtype float32, 值范围 [0, 1]
-        """
-        return (self.pixels.astype(np.float32) / 255.0).reshape(self.grid_size, self.grid_size, 1)
+        return (self.pixels.astype(np.float32) / 255.0).reshape(self.GRID_SIZE, self.GRID_SIZE, 1)
 
 
 class ProbabilityBarChart(QWidget):
